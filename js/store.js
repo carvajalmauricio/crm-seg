@@ -1,11 +1,12 @@
-/* Estado, persistencia (localStorage) y cálculos. Sin dependencias. */
+/* Estado, persistencia (localStorage), migraciones y cálculos. Sin dependencias. */
 'use strict';
 
 (function () {
   const C = window.CONTENT;
   const KEY = 'clyclick_ceo_v1';
+  const TABS = ['hoy', 'calle', 'clientes', 'progreso', 'meta'];
 
-  // ---------- Fechas (siempre en hora local, nunca toISOString para evitar desfase UTC) ----------
+  // ---------- Fechas (hora local; nunca toISOString para evitar el desfase UTC) ----------
   function ymd(d) {
     d = d || new Date();
     const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -25,14 +26,17 @@
     return Math.round((parseYmd(b) - parseYmd(a)) / 86400000);
   }
   function dow(s) { return parseYmd(s).getDay(); }
+  function validYmd(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')); }
 
   // ---------- Estado ----------
   function defaultState() {
     const t = ymd();
     return {
-      version: 1,
+      version: 2,
       config: {
+        onboarded: false,
         sellerName: '',
+        sellerPhone: '',
         dailyVisitGoal: 15,
         workDays: [1, 2, 3, 4, 5, 6],
         unitPrice: 15,
@@ -41,7 +45,8 @@
         monthDays: 24,
         packages: JSON.parse(JSON.stringify(C.DEFAULT_PACKAGES)),
         questions: C.QUESTIONS.slice(),
-        lastBackup: ''
+        lastBackup: '',
+        calDefault: false
       },
       days: {},
       prospects: [],
@@ -53,37 +58,61 @@
         premortem: '', contingency: '',
         habit: '', cue: '', routine: '', reward: ''
       },
-      ui: { tab: 'hoy', pfilter: 'Todos' }
+      ui: {
+        tab: 'hoy', pfilter: 'Todos', psort: 'proximos',
+        calleSeg: 'guion', progSeg: 'semana', metaSeg: 'meta'
+      }
     };
   }
 
-  function load() {
+  function normalize(s) {
     const d = defaultState();
-    let s = null;
-    try { s = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { s = null; }
     if (!s || typeof s !== 'object') return d;
-    return normalize(s, d);
-  }
-
-  function normalize(s, d) {
-    d = d || defaultState();
     const out = Object.assign({}, d, s);
     out.config = Object.assign({}, d.config, s.config || {});
     out.goal = Object.assign({}, d.goal, s.goal || {});
     out.ui = Object.assign({}, d.ui, s.ui || {});
     out.days = (s.days && typeof s.days === 'object') ? s.days : {};
-    out.prospects = Array.isArray(s.prospects) ? s.prospects : [];
-    out.experiments = Array.isArray(s.experiments) ? s.experiments : [];
-    out.reviews = Array.isArray(s.reviews) ? s.reviews : [];
-    if (!Array.isArray(out.config.packages) || out.config.packages.length !== 3) {
-      out.config.packages = JSON.parse(JSON.stringify(C.DEFAULT_PACKAGES));
+    out.prospects = Array.isArray(s.prospects) ? s.prospects.filter(p => p && typeof p === 'object') : [];
+    out.experiments = Array.isArray(s.experiments) ? s.experiments.filter(Boolean) : [];
+    out.reviews = Array.isArray(s.reviews) ? s.reviews.filter(Boolean) : [];
+
+    const cfg = out.config;
+    if (!Array.isArray(cfg.packages) || cfg.packages.length !== 3) cfg.packages = JSON.parse(JSON.stringify(C.DEFAULT_PACKAGES));
+    if (!Array.isArray(cfg.workDays) || !cfg.workDays.length) cfg.workDays = [1, 2, 3, 4, 5, 6];
+    if (!Array.isArray(cfg.questions) || !cfg.questions.length) cfg.questions = C.QUESTIONS.slice();
+
+    // Migración v1 → v2: quien ya usaba la app no ve la bienvenida y conserva su pestaña.
+    if (!s.version || s.version < 2) {
+      const hasData = Object.keys(out.days).length > 0 || out.prospects.length > 0;
+      if (s.config && s.config.onboarded === undefined) cfg.onboarded = hasData;
+      const old = out.ui.tab;
+      if (old === 'prospectos') out.ui.tab = 'clientes';
+      else if (old === 'pruebas') { out.ui.tab = 'progreso'; out.ui.progSeg = 'pruebas'; }
+      else if (old === 'semana') { out.ui.tab = 'progreso'; out.ui.progSeg = 'semana'; }
+      out.version = 2;
     }
-    if (!Array.isArray(out.config.workDays)) out.config.workDays = [1, 2, 3, 4, 5, 6];
-    if (!Array.isArray(out.config.questions) || !out.config.questions.length) out.config.questions = C.QUESTIONS.slice();
+    if (TABS.indexOf(out.ui.tab) === -1) out.ui.tab = 'hoy';
+
+    out.prospects.forEach(p => {
+      if (!p.id) p.id = uid();
+      if (C.STAGES.indexOf(p.stage) === -1) p.stage = 'Visitado';
+      if (p.nextDate && !validYmd(p.nextDate)) p.nextDate = '';
+    });
     return out;
   }
 
-  const S = { state: load() };
+  function load() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { s = null; }
+    return normalize(s);
+  }
+
+  function uid() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  }
+
+  const S = { state: load(), TABS: TABS };
 
   S.save = function () {
     try {
@@ -101,17 +130,24 @@
 
   S.reset = function () {
     S.state = defaultState();
+    S.state.config.onboarded = true;
     S.save();
+  };
+
+  // Deshacer: copia completa del estado antes de una acción.
+  S.snapshot = function () { return JSON.stringify(S.state); };
+  S.restore = function (snap) {
+    try { S.state = normalize(JSON.parse(snap)); S.save(); return true; } catch (e) { return false; }
   };
 
   // ---------- Días ----------
   S.getDay = function (d) {
     const days = S.state.days;
-    if (!days[d]) days[d] = {};
+    if (!days[d] || typeof days[d] !== 'object') days[d] = {};
     const x = days[d];
-    if (typeof x.visits !== 'number') x.visits = 0;
-    if (typeof x.demos !== 'number') x.demos = 0;
-    if (typeof x.laters !== 'number') x.laters = 0;
+    if (typeof x.visits !== 'number') x.visits = Number(x.visits) || 0;
+    if (typeof x.demos !== 'number') x.demos = Number(x.demos) || 0;
+    if (typeof x.laters !== 'number') x.laters = Number(x.laters) || 0;
     if (!Array.isArray(x.salesLog)) x.salesLog = [];
     if (!Array.isArray(x.rejLog)) x.rejLog = [];
     if (!x.answers || typeof x.answers !== 'object') x.answers = {};
@@ -122,12 +158,12 @@
 
   S.dayStats = function (d) {
     const x = S.state.days[d] || {};
-    const sales = x.salesLog || [];
-    const rej = x.rejLog || [];
+    const sales = Array.isArray(x.salesLog) ? x.salesLog : [];
+    const rej = Array.isArray(x.rejLog) ? x.rejLog : [];
     return {
-      visits: x.visits || 0,
-      demos: x.demos || 0,
-      laters: x.laters || 0,
+      visits: Number(x.visits) || 0,
+      demos: Number(x.demos) || 0,
+      laters: Number(x.laters) || 0,
       sales: sales.length,
       units: sales.reduce((a, s) => a + (Number(s.units) || 0), 0),
       revenue: sales.reduce((a, s) => a + (Number(s.amount) || 0), 0),
@@ -138,9 +174,13 @@
     };
   };
 
+  S.minVisits = function (x) {
+    return Math.max(x.demos || 0, (x.salesLog || []).length + (x.rejLog || []).length + (x.laters || 0));
+  };
+
   // Cada venta, "no", "volver" o demo implica una visita: mantiene los números coherentes.
   S.fixVisits = function (x) {
-    const need = Math.max(x.demos || 0, (x.salesLog || []).length + (x.rejLog || []).length + (x.laters || 0));
+    const need = S.minVisits(x);
     if (x.visits < need) { x.visits = need; return true; }
     return false;
   };
@@ -154,7 +194,7 @@
     return g > 0 && S.dayStats(d).visits >= g;
   };
 
-  // Racha: días de trabajo seguidos cumpliendo la meta de visitas. Hoy no rompe la racha si aún no se cumple.
+  // Racha: días de trabajo seguidos cumpliendo la meta. Hoy no rompe la racha si aún no se cumple.
   S.streak = function () {
     const t = ymd();
     let n = 0;
@@ -206,11 +246,19 @@
     return keys.length ? keys[0] : null;
   };
 
-  S.uid = function () {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  S.dueProspects = function (t) {
+    return S.state.prospects
+      .filter(x => x.nextDate && x.nextDate <= t && x.stage !== 'Ganado' && x.stage !== 'Perdido')
+      .sort((a, b) => ((a.nextDate + (a.nextTime || '')) < (b.nextDate + (b.nextTime || '')) ? -1 : 1));
   };
 
-  // Teléfono de Ecuador a formato wa.me (593…)
+  S.findProspect = function (id) {
+    return S.state.prospects.find(x => x.id === id) || null;
+  };
+
+  S.uid = uid;
+
+  // Teléfono de Ecuador a formato internacional sin "+" (593…)
   S.waNumber = function (phone) {
     let n = String(phone || '').replace(/\D/g, '');
     if (!n) return '';
@@ -235,6 +283,6 @@
     return path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), S.state);
   };
 
-  S.dates = { ymd, parseYmd, addDays, daysBetween, dow };
+  S.dates = { ymd, parseYmd, addDays, daysBetween, dow, validYmd };
   window.STORE = S;
 })();
