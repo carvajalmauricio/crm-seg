@@ -32,11 +32,12 @@
   function defaultState() {
     const t = ymd();
     return {
-      version: 2,
+      version: 3,
       config: {
         onboarded: false,
         sellerName: '',
         sellerPhone: '',
+        sellerCity: '',
         dailyVisitGoal: 15,
         workDays: [1, 2, 3, 4, 5, 6],
         unitPrice: 15,
@@ -92,12 +93,23 @@
       else if (old === 'semana') { out.ui.tab = 'progreso'; out.ui.progSeg = 'semana'; }
       out.version = 2;
     }
+    // Migración v2 → v3 (Blount + Cialdini + Voss): "porque" en paquetes, preguntas nuevas.
+    if (out.version < 3) {
+      cfg.questions = cfg.questions.map(q => C.QUESTIONS_RENAME[q] || q);
+      C.QUESTIONS_NEW.forEach(q => { if (cfg.questions.indexOf(q) === -1) cfg.questions.push(q); });
+      if (out.ui.calleSeg === 'paquetes') out.ui.calleSeg = 'precios';
+      if (out.ui.calleSeg === 'objeciones') out.ui.calleSeg = 'objecion';
+      out.version = 3;
+    }
+    cfg.packages.forEach((p, i) => { if (typeof p.why !== 'string') p.why = C.PKG_WHY[i] || ''; });
+    if (['guion', 'objecion', 'precios', 'cerca', 'lista'].indexOf(out.ui.calleSeg) === -1) out.ui.calleSeg = 'guion';
     if (TABS.indexOf(out.ui.tab) === -1) out.ui.tab = 'hoy';
 
     out.prospects.forEach(p => {
       if (!p.id) p.id = uid();
       if (C.STAGES.indexOf(p.stage) === -1) p.stage = 'Visitado';
       if (p.nextDate && !validYmd(p.nextDate)) p.nextDate = '';
+      if (p.stage === 'Ganado' && !p.wonAt && p.updated) p.wonAt = ymd(new Date(p.updated));
     });
     return out;
   }
@@ -148,6 +160,8 @@
     if (typeof x.visits !== 'number') x.visits = Number(x.visits) || 0;
     if (typeof x.demos !== 'number') x.demos = Number(x.demos) || 0;
     if (typeof x.laters !== 'number') x.laters = Number(x.laters) || 0;
+    if (typeof x.owners !== 'number') x.owners = Number(x.owners) || 0;
+    if (typeof x.absent !== 'number') x.absent = Number(x.absent) || 0;
     if (!Array.isArray(x.salesLog)) x.salesLog = [];
     if (!Array.isArray(x.rejLog)) x.rejLog = [];
     if (!x.answers || typeof x.answers !== 'object') x.answers = {};
@@ -164,6 +178,8 @@
       visits: Number(x.visits) || 0,
       demos: Number(x.demos) || 0,
       laters: Number(x.laters) || 0,
+      owners: Number(x.owners) || 0,
+      absent: Number(x.absent) || 0,
       sales: sales.length,
       units: sales.reduce((a, s) => a + (Number(s.units) || 0), 0),
       revenue: sales.reduce((a, s) => a + (Number(s.amount) || 0), 0),
@@ -175,10 +191,10 @@
   };
 
   S.minVisits = function (x) {
-    return Math.max(x.demos || 0, (x.salesLog || []).length + (x.rejLog || []).length + (x.laters || 0));
+    return Math.max(x.demos || 0, x.owners || 0, (x.salesLog || []).length + (x.rejLog || []).length + (x.laters || 0));
   };
 
-  // Cada venta, "no", "volver" o demo implica una visita: mantiene los números coherentes.
+  // Cada venta, "no", "volver", demo o charla con el dueño implica una visita: mantiene los números coherentes.
   S.fixVisits = function (x) {
     const need = S.minVisits(x);
     if (x.visits < need) { x.visits = need; return true; }
@@ -207,23 +223,33 @@
   };
 
   S.rangeStats = function (from, to) {
-    const r = { visits: 0, demos: 0, sales: 0, units: 0, revenue: 0, rej: 0, hours: 0, met: 0, workDays: 0, reasons: {} };
+    const r = {
+      visits: 0, demos: 0, owners: 0, absent: 0, laters: 0, sales: 0, units: 0, revenue: 0, rej: 0, hours: 0, met: 0, workDays: 0,
+      reasons: {}, types: {}, asi: { sales: 0, rej: 0 }, noAsi: { sales: 0, rej: 0 }
+    };
     for (let d = from; d <= to; d = addDays(d, 1)) {
       const s = S.dayStats(d);
       r.visits += s.visits; r.demos += s.demos; r.sales += s.sales; r.units += s.units;
       r.revenue += s.revenue; r.rej += s.rej; r.hours += s.hours;
+      r.owners += s.owners; r.absent += s.absent; r.laters += s.laters;
       if (S.isWorkDay(d)) { r.workDays++; if (S.dayMet(d)) r.met++; }
       const x = S.state.days[d];
-      if (x && Array.isArray(x.rejLog)) x.rejLog.forEach(j => { r.reasons[j.reason] = (r.reasons[j.reason] || 0) + 1; });
+      if (x && Array.isArray(x.rejLog)) x.rejLog.forEach(j => {
+        r.reasons[j.reason] = (r.reasons[j.reason] || 0) + 1;
+        const k = j.type || 'sin';
+        r.types[k] = (r.types[k] || 0) + 1;
+        if (j.asi) r.asi.rej++; else r.noAsi.rej++;
+      });
+      if (x && Array.isArray(x.salesLog)) x.salesLog.forEach(j => { if (j.asi) r.asi.sales++; else r.noAsi.sales++; });
     }
     return r;
   };
 
   S.totals = function () {
-    const r = { visits: 0, demos: 0, sales: 0, units: 0, revenue: 0, rej: 0, hours: 0 };
+    const r = { visits: 0, demos: 0, owners: 0, sales: 0, units: 0, revenue: 0, rej: 0, hours: 0 };
     Object.keys(S.state.days).forEach(d => {
       const s = S.dayStats(d);
-      r.visits += s.visits; r.demos += s.demos; r.sales += s.sales;
+      r.visits += s.visits; r.demos += s.demos; r.sales += s.sales; r.owners += s.owners;
       r.units += s.units; r.revenue += s.revenue; r.rej += s.rej; r.hours += s.hours;
     });
     return r;
@@ -246,10 +272,68 @@
     return keys.length ? keys[0] : null;
   };
 
+  // Pendiente: tiene fecha y no está perdido (un cliente ganado también puede tener entrega o revisión).
+  S.isPending = function (p) { return !!p.nextDate && p.stage !== 'Perdido'; };
+
   S.dueProspects = function (t) {
     return S.state.prospects
-      .filter(x => x.nextDate && x.nextDate <= t && x.stage !== 'Ganado' && x.stage !== 'Perdido')
-      .sort((a, b) => ((a.nextDate + (a.nextTime || '')) < (b.nextDate + (b.nextTime || '')) ? -1 : 1));
+      .filter(x => S.isPending(x) && x.nextDate <= t)
+      .sort((a, b) => ((a.nextDate + (a.nextTime || '99:99')) < (b.nextDate + (b.nextTime || '99:99')) ? -1 : 1));
+  };
+
+  // Mensajes de WhatsApp que tocan hoy (Blount: se mandan antes del primer bloque de visitas).
+  S.messageQueue = function (t) {
+    const tomorrow = addDays(t, 1);
+    const out = [];
+    S.state.prospects.forEach(p => {
+      if (p.stage === 'Perdido') return;
+      const sent = p.sent || {};
+      const created = p.created ? ymd(new Date(p.created)) : '';
+      const open = p.stage !== 'Ganado';
+      let k = '';
+      if (!open) {
+        if (p.wonAt && daysBetween(p.wonAt, t) >= 7 && !p.resultsAsked) k = 'resultados';
+        else if (p.resultsAsked && !p.refAsked && p.wonAt && daysBetween(p.wonAt, t) >= 7) k = 'pedirRef';
+      } else if ((Number(p.noReply) || 0) >= 2 && !sent.descarto) k = 'descarto';
+      else if (p.nextDate === tomorrow && p.nextTime && sent.cita !== p.nextDate) k = 'cita';
+      else if (p.why === 'dueno' && created === t && !sent.dueno) k = 'dueno';
+      else if (p.source === 'Referido' && !(Number(p.msgs) > 0)) k = 'referido';
+      else if (created && daysBetween(created, t) === 1 && !(Number(p.msgs) > 0) && p.stage !== 'Por visitar') k = 'seg24';
+      if (k) out.push({ p: p, k: k });
+    });
+    const order = ['cita', 'dueno', 'seg24', 'referido', 'descarto', 'resultados', 'pedirRef'];
+    return out.sort((a, b) => order.indexOf(a.k) - order.indexOf(b.k));
+  };
+
+  S.founders = function () {
+    return S.state.prospects.filter(p => p.founder).length;
+  };
+
+  // Experimento A/B activo (el más reciente corriendo con dos variantes).
+  S.activeAB = function () {
+    const ex = S.state.experiments.filter(e => e.status === 'Corriendo' && e.a && e.b);
+    return ex.length ? ex[ex.length - 1] : null;
+  };
+
+  S.abStats = function (id) {
+    const r = { A: { days: 0, visits: 0, demos: 0, sales: 0, units: 0 }, B: { days: 0, visits: 0, demos: 0, sales: 0, units: 0 } };
+    Object.keys(S.state.days).forEach(d => {
+      const x = S.state.days[d];
+      if (!x || !x.ab || x.ab.id !== id || !r[x.ab.v]) return;
+      const s = S.dayStats(d);
+      const o = r[x.ab.v];
+      o.days++; o.visits += s.visits; o.demos += s.demos; o.sales += s.sales; o.units += s.units;
+    });
+    return r;
+  };
+
+  // Cifra no redonda (Voss): 800 → 807, 1150 → 1152. Parece calculada, no inventada.
+  S.nonRound = function (n) {
+    n = Math.round(Number(n) || 0);
+    if (n <= 0) return 0;
+    if (n % 10 === 0) return n + 7;
+    if (n % 5 === 0) return n + 2;
+    return n;
   };
 
   S.findProspect = function (id) {
