@@ -295,8 +295,8 @@
         if (p.wonAt && daysBetween(p.wonAt, t) >= 7 && !p.resultsAsked) k = 'resultados';
         else if (p.resultsAsked && !p.refAsked && p.wonAt && daysBetween(p.wonAt, t) >= 7) k = 'pedirRef';
       } else if ((Number(p.noReply) || 0) >= 2 && !sent.descarto) k = 'descarto';
-      else if (p.nextDate === tomorrow && p.nextTime && sent.cita !== p.nextDate) k = 'cita';
       else if (p.why === 'dueno' && created === t && !sent.dueno) k = 'dueno';
+      else if (p.nextDate === tomorrow && p.nextTime && sent.cita !== p.nextDate && !(p.lastMsg && ymd(new Date(p.lastMsg)) === t)) k = 'cita';
       else if (p.source === 'Referido' && !(Number(p.msgs) > 0)) k = 'referido';
       else if (created && daysBetween(created, t) === 1 && !(Number(p.msgs) > 0) && p.stage !== 'Por visitar') k = 'seg24';
       if (k) out.push({ p: p, k: k });

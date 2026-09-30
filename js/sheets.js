@@ -164,7 +164,7 @@
     body += '<div class="acts four">' +
       act('Mensajes', 'chat', { act: 'msg-open', id: p.id }) +
       act('Llamar', 'phone', { href: tel ? 'tel:' + tel : '', off: !tel, blank: false }) +
-      act('Cómo llegar', 'nav', { href: maps, off: !maps }) +
+      act('Llegar', 'nav', { href: maps, off: !maps }) +
       act('Calendario', 'cal', { act: 'act-cal', id: p.id, off: !p.nextDate }) +
       act('Contacto', 'contact', { act: 'act-vcf', id: p.id }) +
       act('Cotizar', 'cash', { act: 'quote-open', id: p.id }) +

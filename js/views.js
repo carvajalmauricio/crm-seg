@@ -244,7 +244,7 @@
     if (!won.length) {
       return h + U.empty('users', 'Aún no tienes clientes ganados', 'Cuando vendas, marca «Puedo mencionarlo» en su ficha para usarlo como referencia con sus vecinos.');
     }
-    if (!pos) h += '<div class="center-note">Buscando tu ubicación…</div>';
+    if (!pos) h += '<div class="center-note">Aún sin tu ubicación. Toca «Actualizar mi ubicación» para ordenarlos por distancia.</div>';
     const list = withLoc.map(p => ({ p: p, d: pos ? N.distance(pos, p) : Infinity })).sort((a, b) => a.d - b.d);
     const rows = list.map(x => {
       const p = x.p;
