@@ -78,7 +78,7 @@
     const cfg = S.state.config;
     const goal = Number(cfg.dailyVisitGoal) || 0;
     const streak = S.streak();
-    let h = U.nav('Hoy', '', U.navBtn('day-edit', 'Corregir', 'Corregir registros del día'));
+    let h = U.nav('Hoy', U.navBtn('route-open', icon('route', 22, 2) + ' Ruta', 'Ruta de hoy'), U.navBtn('day-edit', 'Corregir', 'Corregir registros del día'));
     h += U.head('Hoy', todayLong() + (streak ? ' · racha de ' + streak + ' día' + (streak === 1 ? '' : 's') : ''));
 
     if (day.rest) {
@@ -95,35 +95,59 @@
     if (st.visits > 0 && p < .5) msg = 'Ya arrancaste. Lo difícil era la primera.';
     else if (p >= .5 && p < .8) msg = 'Vas a más de la mitad. Sigue igual.';
     else if (p >= .8 && p < 1) msg = '¡Ya casi! Faltan ' + (goal - st.visits) + '. Este tramo construye tu historia personal (Ley 7).';
-    else if (p >= 1) msg = 'Meta cumplida. Todo lo que hagas desde aquí es extra.';
+    else if (p >= 1) msg = 'Meta cumplida. Haz una visita más: puede ser la venta del día (Blount).';
     h += '<div class="card"><div class="ring-row">' + U.ring(st.visits, goal) +
-      '<div class="kpis"><div class="kpi"><div class="v">' + st.demos + '</div><div class="k">demos (lo probaron)</div></div>' +
-      '<div class="kpi"><div class="v">' + st.sales + ' <span style="font-size:15px;font-weight:500;color:var(--label2)">· ' + st.units + ' u</span></div><div class="k">ventas</div></div>' +
+      '<div class="kpis"><div class="kpi"><div class="v">' + st.owners + ' <span class="kpi-s">· ' + st.demos + ' demo' + (st.demos === 1 ? '' : 's') + '</span></div><div class="k">hablé con el dueño</div></div>' +
+      '<div class="kpi"><div class="v">' + st.sales + ' <span class="kpi-s">· ' + st.units + ' u</span></div><div class="k">ventas</div></div>' +
       '<div class="kpi"><div class="v">' + money(st.revenue) + '</div><div class="k">ingreso de hoy</div></div></div></div>' +
-      '<div class="strip"><div><div class="v">' + pct(st.demos, st.visits) + '</div><div class="k">visita → demo</div></div>' +
-      '<div><div class="v">' + pct(st.sales, st.visits) + '</div><div class="k">visita → venta</div></div>' +
+      '<div class="strip"><div><div class="v">' + pct(st.owners, st.visits) + '</div><div class="k">visita → dueño</div></div>' +
+      '<div><div class="v">' + pct(st.sales, st.owners) + '</div><div class="k">dueño → venta</div></div>' +
       '<div><div class="v">' + (st.hours > 0 ? money(st.revenue / st.hours) : '—') + '</div><div class="k">por hora</div></div></div>' +
       '<div class="msg">' + esc(msg) + '</div></div>';
 
-    h += U.group('', U.cell({ icon: 'clock', iconBg: 'bg-gray', title: 'Horas en la calle', trailHtml: U.stepper('hours-step', {}, st.hours || 0) }),
-      'Para saber cuánto ganas por hora.');
+    // Experimento A/B del día (Ley 21)
+    const ab = S.activeAB();
+    if (ab) {
+      const cur = day.ab && day.ab.id === ab.id ? day.ab.v : '';
+      h += '<div class="card">' + U.law('Experimento A/B · Ley 21') + '<h3 style="margin-top:8px">' + esc(ab.title) + '</h3>' +
+        '<p class="muted" style="margin:2px 0 12px">' + (cur ? 'Hoy usas la variante ' + cur + '. Tus visitas y ventas de hoy cuentan para ella.' : '¿Qué variante usas hoy? Tus visitas y ventas de hoy cuentan para ella.') + '</p>' +
+        '<div class="btns two">' + ['A', 'B'].map(v => '<button class="btn ab-btn' + (cur === v ? '' : ' gray') + '" data-act="ab-set" data-id="' + esc(ab.id) + '" data-v="' + v + '">' + v + ' · ' + esc(v === 'A' ? ab.a : ab.b) + '</button>').join('') + '</div></div>';
+    }
 
-    // Seguimientos (Ley 20)
+    h += U.group('', U.cell({ icon: 'clock', iconBg: 'bg-gray', title: 'Horas en la calle', trailHtml: U.stepper('hours-step', {}, st.hours || 0) }),
+      'Para saber cuánto vale tu hora (Meta › Lo que vale tu tiempo).');
+
+    // Mensajes de WhatsApp que tocan hoy (Blount: antes del primer bloque)
+    const mq = S.messageQueue(t);
+    if (mq.length) {
+      h += U.group('<span>Mensajes de hoy (' + mq.length + ')</span>' + U.law('Blount'), mq.map(m => {
+        const tp = C.TEMPLATES.find(x => x.k === m.k);
+        return U.cell({ act: 'msg-open', data: { id: m.p.id, k: m.k }, icon: 'chat', iconBg: 'bg-green', title: m.p.name || '(sin nombre)', titleCls: 'ellip', sub: tp ? tp.t : '', chev: true });
+      }).join(''), 'Mándalos antes de salir a tu primer bloque de visitas.');
+    }
+
+    // Plan del día: primero citas con hora, luego el resto (Ley 20 + Blount)
     const due = S.dueProspects(t);
+    const isCita = x => x.nextDate === t && !!x.nextTime;
+    const citas = due.filter(isCita);
+    const rest = due.filter(x => !isCita(x));
     let rows = '';
     if (!due.length) {
-      rows = U.cell({ icon: 'check', iconBg: 'bg-green', title: 'Sin pendientes', sub: 'Cada «Volver» aparece aquí el día que toca.' });
+      rows = U.cell({ icon: 'check', iconBg: 'bg-green', title: 'Sin pendientes', sub: 'Cada «Volver» aparece aquí el día que toca, con su hora.' });
     } else {
-      rows = due.map(x => {
-        const wa = U.waLink(x);
-        const trail = wa ? '<a class="wa-btn" data-act="link" href="' + esc(wa) + '" target="_blank" rel="noopener" aria-label="WhatsApp">' + icon('chat', 19, 2) + '</a>' : '';
+      rows = citas.concat(rest).map(x => {
+        const near = isCita(x) ? nearbyToVisit(x).length : 0;
+        let trail = '';
+        if (near) trail += '<button class="near-btn" data-act="route-open" data-id="' + esc(x.id) + '">' + near + ' cerca</button>';
+        trail += '<button class="wa-btn" data-act="msg-open" data-id="' + esc(x.id) + '" aria-label="Mensajes de WhatsApp">' + icon('chat', 19, 2) + '</button>';
         return prospectRow(x, { trail: trail, noPill: true });
       }).join('');
     }
-    h += U.group('<span>Seguimientos de hoy' + (due.length ? ' (' + due.length + ')' : '') + '</span>' + U.law('Ley 20'), rows);
+    h += U.group('<span>Plan del día' + (due.length ? ' (' + due.length + ')' : '') + '</span>' + U.law('Ley 20 · Blount'), rows,
+      citas.length ? 'Primero las citas con hora. Entre una y otra, visita los negocios cercanos (toca «cerca» o Ruta).' : '');
 
     const tip = C.TIPS[U.tipIndex(tipOffset)];
-    h += '<div class="card">' + U.law(tip[0]) + '<p class="tip-body">' + esc(tip[1]) + '</p><button class="btn plain" style="width:auto;padding:0;height:36px" data-act="tip-next">Otra ley</button></div>';
+    h += '<div class="card">' + U.law(tip[0]) + '<p class="tip-body">' + esc(tip[1]) + '</p><button class="btn plain" style="width:auto;padding:0;height:36px" data-act="tip-next">Otro consejo</button></div>';
 
     const lastRev = S.state.reviews.length ? S.state.reviews[S.state.reviews.length - 1].date : null;
     const first = S.earliestDay();
@@ -153,35 +177,58 @@
     return '<div class="screen">' + h + '</div>';
   }
 
+  // Negocios por visitar cerca de un punto (centro y radios de Blount).
+  function nearbyToVisit(center, radius) {
+    radius = radius || 500;
+    if (!center || center.lat == null || center.lat === '') return [];
+    return S.state.prospects
+      .filter(x => x !== center && x.id !== center.id && (x.stage === 'Por visitar' || x.stage === 'Visitado') && x.lat != null && x.lat !== '')
+      .map(x => ({ p: x, d: N.distance(center, x) }))
+      .filter(x => x.d <= radius)
+      .sort((a, b) => a.d - b.d);
+  }
+
   // ---------- CALLE ----------
   function calle() {
     const seg = S.state.ui.calleSeg || 'guion';
     let h = U.nav('Calle');
     h += U.head('Calle', 'Tu guion para cada negocio');
-    h += U.seg('calleSeg', [['guion', 'Guion'], ['objeciones', 'Objeciones'], ['paquetes', 'Paquetes'], ['lista', 'Checklist']], seg);
+    h += U.seg('calleSeg', [['guion', 'Guion'], ['objecion', 'Objeción'], ['precios', 'Precios'], ['cerca', 'Cerca'], ['lista', 'Lista']], seg);
 
     if (seg === 'guion') {
+      const cfg = S.state.config;
+      if (!cfg.sellerName || !cfg.sellerCity) {
+        h += '<div class="card warn" style="padding:12px 16px"><p class="muted" style="margin:0">Pon tu nombre y tu ciudad en Meta › Ajustes para que el guion diga tus datos.</p></div>';
+      }
       h += '<div class="carousel" id="carousel">' + C.STEPS.map((s, i) => {
         let b = '<article class="slide"><div class="num">Paso ' + (i + 1) + ' de ' + C.STEPS.length + '</div><h3>' + esc(s.title.replace(/^\d+\.\s*/, '')) + '</h3><div>' + U.law(s.law) + '</div>';
-        if (s.dont) b += '<div class="nosay"><span class="tag">No digas</span>' + esc(s.dont) + '</div>';
-        b += '<div class="say"><span class="tag">Di</span>' + s.say + '</div>'; // texto fijo de CONTENT (contiene <br>)
-        if (s.note) b += '<div class="note">' + esc(s.note) + '</div>';
+        if (s.dont) b += '<div class="nosay"><span class="tag">No digas</span>' + U.fill(esc(s.dont)) + '</div>';
+        b += '<div class="say"><span class="tag">Di</span>' + U.fill(s.say) + '</div>'; // texto fijo de CONTENT (contiene <br>)
+        if (s.note) b += '<div class="note">' + U.fill(esc(s.note)) + '</div>';
         return b + '</article>';
       }).join('') + '</div>';
       h += '<div class="dots" id="dots">' + C.STEPS.map((s, i) => '<i class="' + (i === 0 ? 'on' : '') + '"></i>').join('') + '</div>';
-      h += '<div class="center-note">Desliza para ver el siguiente paso. Apréndete de memoria la entrada y el cierre.</div>';
-    } else if (seg === 'objeciones') {
-      h += U.group('<span>Toca una objeción</span>' + U.law('Ley 3 · Nunca discutas'),
-        C.OBJECTIONS.map((o, i) => U.cell({ act: 'obj-open', data: { i: i }, title: '«' + o.obj + '»', chev: true })).join(''),
-        'Fórmula: acuerdo → reencuadre → pregunta de sí o no. Nunca empieces con "no, pero…".');
-    } else if (seg === 'paquetes') {
-      h += '<div class="pad" style="margin-bottom:16px">' + U.law('Ley 16 · Ricitos de Oro') + ' <span class="muted">Muéstrale esta pantalla al cliente.</span></div>';
+      h += '<div class="center-note">Desliza para ver el siguiente paso. Apréndete de memoria la entrada y el resumen.</div>';
+    } else if (seg === 'objecion') {
+      h += U.group('<span>Toca una objeción</span>' + U.law('Voss + Blount'),
+        C.OBJECTIONS.map((o, i) => U.cell({ act: 'obj-open', data: { i: i }, title: '«' + o.obj + '»', titleCls: 'ellip', trailHtml: '<span class="pill k-' + o.kind + '">' + esc(C.OBJ_KINDS[o.kind] || '') + '</span>', chev: true })).join(''),
+        '3 pasos: repite sus palabras y calla → nombra lo que siente → responde y pregunta. Máximo 2 intentos. Nunca "le entiendo" ni "no, pero…".');
+      h += U.group('<span>Los 3 tipos de «no»</span>' + U.law('Blount'), C.NO_TYPES.map(x => U.cell({ title: x.t + ' · ' + x.d, sub: x.tip })).join(''));
+      h += U.group('<span>Señales de «sí» falso</span>' + U.law('Voss'), C.FALSE_YES.map(x => U.cell({ icon: 'warn', iconBg: 'bg-orange', title: x[0], sub: x[1] })).join(''), 'Busca un «así es», no un «sí».');
+      h += U.group('<span>Tipo de dueño</span>' + U.law('Voss'), C.OWNER_TYPES.map(x => U.cell({ icon: 'person', iconBg: 'bg-indigo', title: x.k + ' · ' + x.d, sub: x.tip })).join(''), 'Anótalo en la ficha del cliente para preparar la siguiente visita.');
+    } else if (seg === 'precios') {
+      h += '<div class="pad" style="margin-bottom:16px">' + U.law('Ley 16 · Cialdini · contraste') + ' <span class="muted">Muéstrale esta pantalla al cliente: de mayor a menor.</span></div>';
       h += packagesHtml();
       h += '<div class="pad btns"><button class="btn" data-act="quote-open">' + icon('share', 20, 2) + ' Enviar cotización</button></div>';
-      h += '<div class="center-note mt12">Los paquetes se editan en Meta › Ajustes.</div>';
+      h += '<div class="center-note mt12">Di el precio con voz firme. Si duda, baja en cantidad, nunca en precio. Los paquetes y su «porque» se editan en Meta › Ajustes.</div>';
+      h += U.group('<span>Software y páginas web</span>' + U.law('Voss'),
+        U.cell({ act: 'pliego-open', icon: 'doc', iconBg: 'bg-purple', title: 'Preparar pliego de negociación', sub: 'Rango de precio no redondo, autoacusaciones, preguntas y extras', chev: true }),
+        'Prepáralo antes de cada cotización de software. Desde la ficha de un cliente queda guardado con él.');
+    } else if (seg === 'cerca') {
+      h += cercaHtml();
     } else {
       const day = S.getDay(D.ymd());
-      h += U.group('<span>Antes de salir</span>' + U.law('Ley 9 · Ley 17'), C.PREP.map((x, i) => {
+      h += U.group('<span>Antes de salir</span>' + U.law('Ley 9 · Ley 17 · Blount'), C.PREP.map((x, i) => {
         const on = !!day.prep[i];
         return U.cell({ act: 'prep', data: { i: i }, cls: on ? 'done' : '', lead: '<span class="chk' + (on ? ' on' : '') + '">' + (on ? icon('check', 15, 3) : '') + '</span>', title: x });
       }).join(''), 'Se reinicia cada día.');
@@ -189,11 +236,41 @@
     return '<div class="screen">' + h + '</div>';
   }
 
+  // Clientes ganados cerca para mencionar (Cialdini · prueba social).
+  function cercaHtml() {
+    const pos = N.lastPos;
+    const won = S.state.prospects.filter(p => p.stage === 'Ganado');
+    const withLoc = won.filter(p => p.lat != null && p.lat !== '');
+    const f = S.founders();
+    let h = '<div class="pad" style="margin-bottom:14px">' + U.law('Cialdini · prueba social') + ' <span class="muted">Clientes ganados cerca de ti. Menciona solo a los que te dieron permiso.</span></div>';
+    if (!won.length) {
+      return h + U.empty('users', 'Aún no tienes clientes ganados', 'Cuando vendas, marca «Puedo mencionarlo» en su ficha para usarlo como referencia con sus vecinos.');
+    }
+    if (!pos) h += '<div class="center-note">Buscando tu ubicación…</div>';
+    const list = withLoc.map(p => ({ p: p, d: pos ? N.distance(pos, p) : Infinity })).sort((a, b) => a.d - b.d);
+    const rows = list.map(x => {
+      const p = x.p;
+      const badge = p.mentionOk ? '<span class="pill s4">Puedes mencionarlo</span>' : '<span class="pill s3">Pide permiso</span>';
+      return '<div class="cell tap inset-av prow" data-act="p-open" data-id="' + esc(p.id) + '">' + U.avatar(p) +
+        '<span class="main"><span class="row-top"><span class="t ellip">' + esc(p.name || '(sin nombre)') + '</span>' + (isFinite(x.d) ? '<span class="when">' + esc(N.fmtDist(x.d)) + '</span>' : '') + '</span>' +
+        '<span class="s ellip">' + badge + (p.founder ? '<span class="pill founder">Fundador</span>' : '') + esc(p.rubro || '') + '</span></span><span class="chev">' + icon('chev', 18, 2.2) + '</span></div>';
+    }).join('');
+    h += U.group('Clientes con ubicación (' + list.length + ')', rows || U.cell({ title: 'Ningún cliente ganado tiene ubicación guardada' }),
+      'Di: "Aquí a la vuelta, en [negocio], ya lo tienen en la caja." Solo con permiso.');
+    const noLoc = won.length - withLoc.length;
+    if (noLoc) h += '<div class="center-note">' + noLoc + ' cliente' + (noLoc === 1 ? '' : 's') + ' sin ubicación no aparece' + (noLoc === 1 ? '' : 'n') + ' aquí.</div>';
+    h += U.group('', U.cell({ icon: 'star', iconBg: 'bg-yellow', title: 'Clientes fundadores: ' + f + ' de ' + C.FOUNDERS_MAX, sub: f < C.FOUNDERS_MAX ? 'A los primeros 5: diseño gratis a cambio de permiso para mencionarlos y una foto con el hablador.' : 'Completo. Úsalos como prueba social.' }));
+    h += '<div class="pad"><button class="btn tinted" data-act="cerca-locate">' + icon('nav', 20, 2) + ' Actualizar mi ubicación</button></div>';
+    return h;
+  }
+
+  // De mayor a menor (Cialdini · contraste). El recomendado sigue siendo el del medio.
   function packagesHtml() {
     const cfg = S.state.config;
     const unit = Number(cfg.unitPrice) || 0;
     const cost = Number(cfg.unitCost) || 0;
-    return cfg.packages.map((p, i) => {
+    return cfg.packages.map((p, i) => ({ p: p, i: i })).reverse().map(o => {
+      const p = o.p, i = o.i;
       const units = Number(p.units) || 0;
       const price = Number(p.price) || 0;
       const per = units ? price / units : 0;
@@ -202,6 +279,7 @@
       x += '<div class="info"><div class="name">' + esc(p.name) + '</div><div class="u">' + units + ' hablador' + (units === 1 ? '' : 'es') + (units > 1 ? ' · ' + money(per) + ' c/u' : '') + '</div>';
       if (save > 0.009) x += '<div class="sv">Ahorra ' + money(save) + '</div>';
       if (p.desc) x += '<div class="ds">' + esc(p.desc) + '</div>';
+      if (p.why) x += '<div class="why">Porque ' + esc(p.why) + '</div>';
       if (cost > 0 && per > 0 && per <= cost) x += '<div class="warn">Precio por unidad menor o igual a tu costo</div>';
       x += '</div><div class="price">' + money(price) + '</div></div>';
       return x;
