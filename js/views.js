@@ -15,9 +15,8 @@
   }
 
   function prospectSub(p) {
-    const open = p.stage !== 'Ganado' && p.stage !== 'Perdido';
     const t = D.ymd();
-    if (open && p.nextDate) {
+    if (S.isPending(p)) {
       const overdue = p.nextDate < t;
       return { text: (p.nextAction || 'Seguimiento') + ' · ' + U.relDate(p.nextDate) + (p.nextTime ? ' ' + p.nextTime : ''), warn: overdue };
     }
@@ -26,14 +25,12 @@
   }
 
   function whenText(p) {
-    const open = p.stage !== 'Ganado' && p.stage !== 'Perdido';
-    if (open && p.nextDate) return { text: U.relDate(p.nextDate) + (p.nextTime ? ' ' + p.nextTime : ''), warn: p.nextDate < D.ymd() };
+    if (S.isPending(p)) return { text: U.relDate(p.nextDate) + (p.nextTime ? ' ' + p.nextTime : ''), warn: p.nextDate < D.ymd() };
     return { text: '', warn: false };
   }
 
   function detailText(p) {
-    const open = p.stage !== 'Ganado' && p.stage !== 'Perdido';
-    if (open && p.nextDate) return p.nextAction || 'Seguimiento';
+    if (S.isPending(p)) return p.nextAction || 'Seguimiento';
     if (p.stage === 'Ganado' && (p.units || p.amount)) return 'Compró ' + (Number(p.units) || 0) + ' u · ' + money(p.amount);
     return [p.rubro, p.zone].filter(Boolean).join(' · ');
   }
@@ -46,7 +43,8 @@
     return '<div class="cell tap inset-av prow" data-act="p-open" data-id="' + esc(p.id) + '">' + U.avatar(p) +
       '<span class="main"><span class="row-top"><span class="t ellip">' + esc(p.name || '(sin nombre)') + '</span>' +
       (right ? '<span class="when' + (w.warn && !o.dist ? ' warn' : '') + '">' + esc(right) + '</span>' : '') + '</span>' +
-      '<span class="s ellip">' + (o.noPill ? '' : U.pill(p.stage)) + esc(detailText(p)) + '</span></span>' +
+      '<span class="s ellip">' + (o.noPill ? '' : U.pill(p.stage)) + (p.stage !== 'Ganado' && p.stage !== 'Perdido' ? U.tempPill(p.temp) : '') +
+      (p.founder ? '<span class="pill founder">Fundador</span>' : '') + esc(detailText(p)) + '</span></span>' +
       (o.trail || '') + '<span class="chev">' + icon('chev', 18, 2.2) + '</span></div>';
   }
 
@@ -310,7 +308,7 @@
     const q = String(query || '').toLowerCase().trim();
     let ps = S.state.prospects.slice();
     if (f !== 'Todos') ps = ps.filter(p => p.stage === f);
-    if (q) ps = ps.filter(p => [p.name, p.contact, p.zone, p.rubro, p.notes, p.phone].join(' ').toLowerCase().indexOf(q) !== -1);
+    if (q) ps = ps.filter(p => [p.name, p.contact, p.zone, p.rubro, p.notes, p.phone, p.keyFact, p.referredBy, p.source, p.deciders, p.ownerType].join(' ').toLowerCase().indexOf(q) !== -1);
     if (!S.state.prospects.length) {
       return U.empty('users', 'Aún no tienes clientes', 'Registra negocios con el botón Volver en Hoy o con el botón +.', '<button class="btn sm" data-act="p-new">Agregar cliente</button>');
     }
@@ -325,7 +323,7 @@
     } else if (sort === 'recientes') {
       ps.sort((a, b) => (b.updated || 0) - (a.updated || 0));
     } else {
-      const key = p => (p.stage !== 'Ganado' && p.stage !== 'Perdido' && p.nextDate ? p.nextDate + (p.nextTime || '') : '9999');
+      const key = p => (S.isPending(p) ? p.nextDate + (p.nextTime || '99:99') : '9999');
       ps.sort((a, b) => {
         const ka = key(a), kb = key(b);
         if (ka !== kb) return ka < kb ? -1 : 1;
@@ -375,11 +373,24 @@
       '<div class="kpi-card"><div class="k">Cierre</div><div class="v">' + Math.round(ra * 100) + '%</div>' + delta(Math.round(ra * 100), Math.round(rb * 100), v => v + ' pts') + '</div>' +
       '</div>';
 
-    h += U.group('<span>Embudo de la semana</span>' + U.law('Ley 23'),
-      hbars([['Visitas', a.visits], ['Demos', a.demos, a.demos + ' · ' + pct(a.demos, a.visits)], ['Ventas', a.sales, a.sales + ' · ' + pct(a.sales, a.visits)]], a.visits) +
+    h += U.group('<span>Embudo de la semana</span>' + U.law('Ley 23 · Blount'),
+      hbars([['Visitas', a.visits], ['Hablé con el dueño', a.owners, a.owners + ' · ' + pct(a.owners, a.visits)], ['Demos', a.demos, a.demos + ' · ' + pct(a.demos, a.visits)], ['Ventas', a.sales, a.sales + ' · ' + pct(a.sales, a.visits)]], a.visits) +
+      U.cell({ title: 'Dueño no estaba', trail: String(a.absent) }) +
       U.cell({ title: 'Días con meta cumplida', trail: a.met + ' de ' + a.workDays }) +
       U.cell({ title: 'Habladores vendidos', trail: String(a.units) }),
       'Si te da miedo mirar estos números, es cuando más debes mirarlos (no seas avestruz).');
+
+    const tk = [['reflejo', 'Reflejo'], ['evasiva', 'Evasiva'], ['objecion', 'Objeción real'], ['sin', 'Sin clasificar']].filter(x => a.types[x[0]]);
+    const maxT = tk.reduce((m, x) => Math.max(m, a.types[x[0]]), 0);
+    h += U.group('<span>Tipos de «no»</span>' + U.law('Blount'),
+      tk.length ? hbars(tk.map(x => [x[1], a.types[x[0]]]), maxT, 'var(--orange)') : U.cell({ title: 'Sin "no" anotados esta semana' }),
+      tk.length ? 'Muchos reflejos: mejora la entrada. Muchas evasivas: amarra día y hora. Muchas objeciones: practica esas respuestas.' : '');
+
+    const asiT = a.asi.sales + a.asi.rej, noT = a.noAsi.sales + a.noAsi.rej;
+    h += U.group('<span>Resumen y «así es»</span>' + U.law('Voss'),
+      U.cell({ title: 'Hice el resumen y dijo «así es»', sub: a.asi.sales + ' ventas de ' + asiT, trail: pct(a.asi.sales, asiT) }) +
+      U.cell({ title: 'Sin resumen', sub: a.noAsi.sales + ' ventas de ' + noT, trail: pct(a.noAsi.sales, noT) }),
+      'Cierre = ventas ÷ (ventas + "no"). Marca la casilla al registrar para saber si el resumen te da más ventas.');
 
     const reasons = Object.keys(a.reasons).sort((x, y) => a.reasons[y] - a.reasons[x]);
     const maxR = reasons.length ? a.reasons[reasons[0]] : 0;
@@ -394,6 +405,19 @@
       const keys = Object.keys(byR).sort((x, y) => byR[y] - byR[x]);
       h += U.group('Clientes ganados por rubro', hbars(keys.map(k => [k, byR[k]]), byR[keys[0]], 'var(--green)'), 'Total histórico. Concéntrate en el rubro que más compra.');
     }
+
+    const from = D.addDays(t, -6);
+    const recent = S.state.prospects.filter(p => p.created && D.ymd(new Date(p.created)) >= from);
+    if (recent.length) {
+      const bySrc = {};
+      recent.forEach(p => { const k = p.source || 'Sin dato'; bySrc[k] = (bySrc[k] || 0) + 1; });
+      const ks = Object.keys(bySrc).sort((x, y) => bySrc[y] - bySrc[x]);
+      h += U.group('¿De dónde vinieron?', hbars(ks.map(k => [k, bySrc[k]]), bySrc[ks[0]], 'var(--teal)'), 'Clientes registrados esta semana según su origen.');
+    }
+
+    const f = S.founders();
+    h += U.group('<span>Clientes fundadores</span>' + U.law('Cialdini'),
+      U.cell({ icon: 'star', iconBg: 'bg-yellow', title: f + ' de ' + C.FOUNDERS_MAX + ' fundadores', sub: f < C.FOUNDERS_MAX ? 'A los primeros 5: diseño gratis a cambio de permiso para mencionarlos y una foto con el hablador.' : 'Completo. Úsalos como prueba social (Calle › Cerca).' }));
 
     h += U.group('<span>Revisión de la semana</span>' + U.law('Ley 20'),
       C.REVIEW_FIELDS.map(f => '<label class="field"><span class="lbl">' + esc(f[1]) + '</span><textarea id="rv-' + f[0] + '" rows="2"></textarea></label>').join(''),
@@ -414,14 +438,19 @@
     const okN = ex.filter(e => e.status === 'Funcionó').length;
     const bad = ex.filter(e => e.status === 'No funcionó').length;
     let h = '<div class="card">' + U.law('Ley 21 · Equivócate más que la competencia') +
-      '<p class="tip-body">Cambia <b>una sola cosa</b> por semana y mide. Casi todo es una puerta de dos vías: si falla, vuelves atrás sin daño. Decide rápido.</p>' +
+      '<p class="tip-body">Cambia <b>una sola cosa</b> por semana y mide. Con variantes A y B, elige cada mañana en Hoy cuál usas y la app compara el cierre.</p>' +
       '<div class="strip"><div><div class="v">' + run + '</div><div class="k">corriendo</div></div><div><div class="v">' + okN + '</div><div class="k">funcionaron</div></div><div><div class="v">' + bad + '</div><div class="k">aprendizajes</div></div></div></div>';
     h += '<div class="pad" style="margin-bottom:26px"><button class="btn" data-act="exp-new">' + icon('plus', 20, 2.2) + ' Nuevo experimento</button></div>';
 
     if (ex.length) {
       h += U.group('Tus experimentos', ex.slice().reverse().map(e => {
         const cls = e.status === 'Funcionó' ? 's4' : e.status === 'No funcionó' ? 's5' : 's3';
-        return U.cell({ act: 'exp-open', data: { id: e.id }, icon: 'flask', iconBg: 'bg-purple', title: e.title, titleCls: 'ellip', sub: e.metric ? 'Métrica: ' + e.metric : '', trailHtml: '<span class="pill ' + cls + '">' + esc(e.status) + '</span>', chev: true });
+        let sub = e.metric ? 'Métrica: ' + e.metric : '';
+        if (e.a && e.b) {
+          const r = S.abStats(e.id);
+          sub = 'A ' + pct(r.A.sales, r.A.visits) + ' · B ' + pct(r.B.sales, r.B.visits) + ' de cierre · ' + (r.A.days + r.B.days) + ' días';
+        }
+        return U.cell({ act: 'exp-open', data: { id: e.id }, icon: 'flask', iconBg: 'bg-purple', title: e.title, titleCls: 'ellip', sub: sub, trailHtml: '<span class="pill ' + cls + '">' + esc(e.status) + '</span>', chev: true });
       }).join(''));
     }
     h += U.group('Ideas para probar', C.EXP_IDEAS.map((e, i) => U.cell({ act: 'exp-idea', data: { i: i }, icon: 'bulb', iconBg: 'bg-yellow', title: e.title, sub: e.metric, chev: true })).join(''), 'Toca una para empezarla.');
@@ -508,6 +537,28 @@
     return lines.map(l => '<div style="padding:4px 0;font-size:15px;line-height:1.4">' + l + '</div>').join('');
   }
 
+  // Lo que vale tu tiempo (Blount + Cialdini): cada visita vale dinero, aunque digan que no.
+  function metaHour() {
+    const tot = S.totals();
+    const cfg = S.state.config;
+    const cost = Number(cfg.unitCost) || 0;
+    const profit = tot.revenue - tot.units * cost;
+    const lines = [];
+    if (tot.visits < 10) {
+      lines.push('<span style="color:var(--label2)">Con 10 visitas o más registradas verás cuánto vale cada visita y cada hora.</span>');
+    } else {
+      const perVisit = tot.revenue / tot.visits;
+      lines.push('Cada visita vale en promedio <b>' + money(perVisit) + '</b>, aunque te digan que no.');
+      if (cost > 0) lines.push('En ganancia: <b>' + money(profit / tot.visits) + '</b> por visita.');
+      if (tot.sales > 0) lines.push('Haces ' + (Math.round(tot.visits / tot.sales * 10) / 10) + ' visitas por venta: cada "no" te acerca a la siguiente.');
+      if (tot.hours > 0) lines.push('Tu hora en la calle vale <b>' + money(tot.revenue / tot.hours) + '</b>' + (cost > 0 ? ' (' + money(profit / tot.hours) + ' de ganancia)' : '') + '. Cada hora que no sales te cuesta eso.');
+      else lines.push('<span style="color:var(--label2)">Anota tus horas en Hoy para saber cuánto vale tu hora.</span>');
+      const md = Number(cfg.monthDays) || 0;
+      if (md) lines.push('Una visita más al día son <b>' + money(perVisit * md) + '</b> más al mes.');
+    }
+    return lines.map(l => '<div style="padding:4px 0;font-size:15px;line-height:1.4">' + l + '</div>').join('');
+  }
+
   function slider(label, path) {
     const v = Number(S.getPath(path)) || 1;
     return '<label class="slider-cell"><span class="top"><span>' + esc(label) + '</span><b id="lv-' + path.replace(/\./g, '-') + '">' + v + '</b></span><input type="range" min="1" max="10" step="1" data-bind="' + path + '" data-type="num" data-after="meta" value="' + v + '"></label>';
@@ -553,6 +604,10 @@
       '<div class="cell" style="display:block" id="meta-calc">' + metaCalc() + '</div>',
       'Con un producto de ' + money(S.state.config.unitPrice) + ' necesitas volumen: úsalo para abrir la puerta a tu software.');
 
+    h += U.group('<span>Lo que vale tu tiempo</span>' + U.law('Blount · Cialdini'),
+      '<div class="cell" style="display:block" id="meta-hour">' + metaHour() + '</div>',
+      'Calculado con todos tus registros.');
+
     h += U.group('<span>Imagina que en 90 días fracasó</span>' + U.law('Ley 25'),
       field('¿Qué pasó? Escribe todas las razones', 'goal.premortem', { area: true, ph: 'Visité pocos negocios · El precio no dejaba margen · No hice seguimiento…' }) +
       field('Mi plan para que no pase', 'goal.contingency', { area: true }));
@@ -563,8 +618,9 @@
     const cfg = S.state.config;
     let h = U.group('Perfil',
       field('Tu nombre', 'config.sellerName', { ph: 'Aparece en WhatsApp y cotizaciones' }) +
-      field('Tu WhatsApp', 'config.sellerPhone', { type: 'tel', inputmode: 'tel', ph: '09XXXXXXXX' }),
-      'Se usa en los mensajes y en la imagen de cotización.');
+      field('Tu WhatsApp', 'config.sellerPhone', { type: 'tel', inputmode: 'tel', ph: '09XXXXXXXX' }) +
+      field('Tu ciudad', 'config.sellerCity', { ph: 'Ej. Cuenca' }),
+      'Se usa en el guion, los mensajes y la imagen de cotización.');
 
     h += U.group('Calle',
       U.cell({ icon: 'store', iconBg: 'bg-blue', title: 'Visitas por día', trailHtml: U.stepper('goal-step', {}, cfg.dailyVisitGoal) }) +
@@ -574,8 +630,8 @@
       'Las rachas solo cuentan tus días de trabajo.');
 
     h += U.group('<span>Paquetes</span>' + U.law('Ley 16'),
-      cfg.packages.map((p, i) => U.cell({ act: 'pkg-open', data: { i: i }, icon: 'cash', iconBg: i === 1 ? 'bg-blue' : 'bg-gray', title: p.name + (i === 1 ? ' · recomendado' : ''), trail: (Number(p.units) || 0) + ' u · ' + money(p.price), chev: true })).join(''),
-      'Sugerencia inicial: ajústalos a tu costo real. El del medio es el recomendado.');
+      cfg.packages.map((p, i) => U.cell({ act: 'pkg-open', data: { i: i }, icon: 'cash', iconBg: i === 1 ? 'bg-blue' : 'bg-gray', title: p.name + (i === 1 ? ' · recomendado' : ''), titleCls: 'ellip', sub: p.why ? 'Porque ' + p.why : 'Sin «porque»', trail: (Number(p.units) || 0) + ' u · ' + money(p.price), chev: true })).join(''),
+      'Sugerencia inicial: ajústalos a tu costo real. El del medio es el recomendado. Al cliente se le muestran de mayor a menor (Cialdini).');
 
     h += U.group('Cierre del día',
       U.cell({ act: 'q-edit', icon: 'list', iconBg: 'bg-green', title: 'Preguntas de sí o no', trail: String(cfg.questions.length), chev: true }));
@@ -592,12 +648,12 @@
       U.cell({ act: 'reset', cls: 'danger', title: 'Borrar todos los datos' }),
       'Último respaldo: ' + (cfg.lastBackup ? esc(U.fmtDate(cfg.lastBackup)) : 'nunca') + '. Tus datos viven solo en este iPhone. Las fotos no van en el respaldo: guárdalas en tu carrete desde la ficha del cliente.');
 
-    h += U.group('', U.cell({ icon: 'target', iconBg: 'bg-indigo', title: 'Sistema CEO · Clyclick', sub: 'Basado en «El Diario de un CEO»', trail: 'v2.0' }));
+    h += U.group('', U.cell({ icon: 'target', iconBg: 'bg-indigo', title: 'Sistema CEO · Clyclick', sub: 'El Diario de un CEO · Blount · Cialdini · Voss', trail: 'v3.0' }));
     return h;
   }
 
   window.VIEWS = {
     hoy, calle, clientes, clientList, progreso, meta,
-    metaHero, metaEq, metaCalc, packagesHtml, prospectSub
+    metaHero, metaEq, metaCalc, metaHour, packagesHtml, prospectSub, nearbyToVisit, cercaHtml
   };
 })();
