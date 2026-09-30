@@ -31,6 +31,15 @@
   let locating = false;
   let viewer = null;         // { el, id, pid, blob, url }
   let lastTab = null;
+  let cercaTried = false;    // un intento automático de ubicación en Calle › Cerca
+
+  // Próxima acción sugerida según el motivo de "Volver" (solo si el campo sigue con un valor por defecto).
+  const WHY_NEXT = {
+    dueno: 'Hablar con el dueño (mandarle su perfil esta noche)',
+    consultar: 'Mostrárselo a los que deciden',
+    pensar: 'Preguntar: ¿qué tendría que ver para decidirse?',
+    cita: 'Cita para cerrar'
+  };
 
   const TAB_DEF = [
     ['hoy', 'home', 'Hoy'], ['calle', 'pin', 'Calle'], ['clientes', 'users', 'Clientes'],
@@ -52,6 +61,7 @@
     dock.id = 'dock';
     dock.innerHTML = '<div class="dock-in">' +
       '<button class="dk visit" data-act="dock-visit" aria-label="Sumar visita">' + icon('store', 24, 2) + '<span>Visita</span><span class="cnt" id="cnt-visits">0</span></button>' +
+      '<button class="dk owner" data-act="dock-owner" aria-label="Hablé con el dueño">' + icon('person', 24, 2) + '<span>Dueño</span><span class="cnt" id="cnt-owners">0</span></button>' +
       '<button class="dk demo" data-act="dock-demo" aria-label="Sumar demo">' + icon('tap', 24, 2) + '<span>Demo</span><span class="cnt" id="cnt-demos">0</span></button>' +
       '<button class="dk sale" data-act="dock-sale" aria-label="Registrar venta">' + icon('cash', 24, 2) + '<span>Venta</span></button>' +
       '<button class="dk no" data-act="dock-no" aria-label="Registrar no">' + icon('noCircle', 24, 2) + '<span>No</span></button>' +
@@ -77,6 +87,7 @@
     document.body.classList.toggle('has-dock', tab === 'hoy');
     $('cnt-visits').textContent = st.visits;
     $('cnt-demos').textContent = st.demos;
+    $('cnt-owners').textContent = st.owners;
     const due = S.dueProspects(today()).length;
     $tabbar.querySelectorAll('.tab').forEach(b => {
       const on = b.dataset.tab === tab;
@@ -110,6 +121,7 @@
     onScroll();
     if (tab === 'calle' && $('carousel')) bindCarousel();
     if (tab === 'clientes' && S.state.ui.psort === 'cerca' && !N.lastPos) locate();
+    if (tab === 'calle' && S.state.ui.calleSeg === 'cerca' && !N.lastPos && !cercaTried) { cercaTried = true; locate(); }
   }
 
   function goTab(tab) {
@@ -165,6 +177,9 @@
     else if (sheet && sheet.ctx.kind === 'detail') {
       const p = S.findProspect(sheet.ctx.id);
       if (p) { refreshSheet(SH.prospectDetail(p)); loadPhotos(p.id); } else closeSheet();
+    } else if (sheet && sheet.ctx.kind === 'messages') {
+      const p = S.findProspect(sheet.ctx.id);
+      if (p) refreshSheet(SH.messages(p, sheet.ctx.k, sheet.ctx.fromDetail)); else closeSheet();
     } else closeSheet();
     render();
     snack('Deshecho');
@@ -252,12 +267,15 @@
   }
 
   // ---------- Ventas ----------
+  function asiOn() { const x = $('asi-sw'); return !!(x && x.checked); }
+
   function addSale(units, amount, pkg) {
     if (!(units > 0)) { snack('Pon al menos 1 unidad'); return; }
     if (!(amount >= 0)) { snack('Monto inválido'); return; }
+    const asi = asiOn();
     const snap = S.snapshot();
     const d = S.getDay(today());
-    d.salesLog.push({ units: units, amount: amount, pkg: pkg || '', at: Date.now() });
+    d.salesLog.push({ units: units, amount: amount, pkg: pkg || '', asi: asi, at: Date.now() });
     const bumped = S.fixVisits(d);
     persist();
     render();
@@ -270,6 +288,7 @@
   function openProspectForm(p, src, from) {
     openSheet(SH.prospectForm(p, src), { kind: 'form', id: p.id || null, src: src || '', from: from || '' });
     updateRubroHint();
+    updateWhyHint(false);
     if (!p.id && (src === 'later' || src === 'won')) fillGeo(false);
   }
 
@@ -283,6 +302,32 @@
     wrap.style.display = soft ? '' : 'none';
     const sw = $('pf-softwhich');
     if (soft && sw && !sw.value) sw.value = soft;
+  }
+
+  // Voss · detector de "sí" falso: marca el chip, muestra la pista y ajusta etiquetas.
+  function updateWhyHint(touchNext) {
+    const inpEl = $('pf-why');
+    if (!inpEl) return;
+    const k = inpEl.value;
+    const w = C.VOLVER_WHY.find(x => x.k === k);
+    document.querySelectorAll('[data-act="pf-why"]').forEach(b => b.classList.toggle('on', b.dataset.k === k));
+    const wrap = $('pf-why-wrap'), hint = $('pf-why-hint');
+    if (wrap && hint) { hint.textContent = w ? w.hint : ''; wrap.style.display = w ? '' : 'none'; }
+    const lbl = $('pf-contact-lbl');
+    if (lbl) lbl.textContent = k === 'dueno' ? 'Nombre del dueño' : 'Persona de contacto';
+    if (touchNext) {
+      const nx = $('pf-next');
+      const defaults = ['', 'Volver a visitar'].concat(Object.keys(WHY_NEXT).map(x => WHY_NEXT[x]));
+      if (nx && defaults.indexOf(nx.value.trim()) !== -1) nx.value = WHY_NEXT[k] || 'Volver a visitar';
+    }
+  }
+
+  function updateOwnerHint() {
+    const sl = $('pf-otype'), wrap = $('pf-otype-wrap'), hint = $('pf-otype-hint');
+    if (!sl || !wrap || !hint) return;
+    const o = C.OWNER_TYPES.find(x => x.k === sl.value);
+    hint.textContent = o ? o.tip : '';
+    wrap.style.display = o ? '' : 'none';
   }
 
   function fillGeo(manual) {
@@ -314,14 +359,20 @@
     }).then(function () { geoBusy = false; });
   }
 
-  function locate() {
+  function refreshLocViews() {
+    if (S.state.ui.tab === 'clientes' && $('p-list')) $('p-list').innerHTML = V.clientList(query);
+    if (S.state.ui.tab === 'calle' && S.state.ui.calleSeg === 'cerca' && !sheet) render();
+    if (sheet && sheet.ctx.kind === 'route') refreshSheet(SH.route(sheet.ctx.focus));
+  }
+
+  function locate(fresh) {
     if (locating) return;
     locating = true;
-    N.recentPosition().then(function () {
-      if (S.state.ui.tab === 'clientes' && $('p-list')) $('p-list').innerHTML = V.clientList(query);
+    (fresh ? N.getPosition() : N.recentPosition()).then(function () {
+      refreshLocViews();
     }).catch(function (err) {
       snack(err.message);
-      if ($('p-list')) $('p-list').innerHTML = V.clientList(query);
+      refreshLocViews();
     }).then(function () { locating = false; });
   }
 
@@ -336,10 +387,26 @@
     if (!name) { snack('Escribe el nombre del negocio'); const n = $('pf-name'); if (n) n.focus(); return; }
     const existing = ctx.id ? S.findProspect(ctx.id) : null;
     const isNew = !existing;
+    const later = isNew && ctx.src === 'later';
+    const date = val('pf-date');
+    const time = val('pf-time');
+    const keep = (id, key) => ($(id) ? val(id) : (existing && existing[key] != null ? existing[key] : ''));
+    const chk = (id, key) => ($(id) ? !!$(id).checked : !!(existing && existing[key]));
+    const why = keep('pf-why', 'why');
+    if (later && !why) { snack('Elige por qué vuelves (detector de «sí» falso)'); return; }
+    if (later && (!D.validYmd(date) || !time)) {
+      snack('Pon día y hora: «cuando quiera» no es una cita (Blount)');
+      const f = !D.validYmd(date) ? $('pf-date') : $('pf-time');
+      if (f) f.focus();
+      return;
+    }
+    const w = C.VOLVER_WHY.find(x => x.k === why);
     const snap = S.snapshot();
     const now = Date.now();
     const lat = val('pf-lat'), lng = val('pf-lng');
-    const date = val('pf-date');
+    const stage = val('pf-stage') || 'Visitado';
+    const post = {};
+    C.POST_Q.forEach(q => { post[q[0]] = $('pf-post-' + q[0]) ? val('pf-post-' + q[0]) : ((existing && existing.post && existing.post[q[0]]) || ''); });
     const rec = Object.assign({}, existing || {}, {
       id: existing ? existing.id : S.uid(),
       name: name,
@@ -350,10 +417,21 @@
       lat: lat !== '' && isFinite(Number(lat)) ? Number(lat) : null,
       lng: lng !== '' && isFinite(Number(lng)) ? Number(lng) : null,
       acc: Number(val('pf-acc')) || null,
-      stage: val('pf-stage') || 'Visitado',
+      stage: stage,
       nextAction: val('pf-next'),
       nextDate: D.validYmd(date) ? date : '',
-      nextTime: val('pf-time'),
+      nextTime: time,
+      why: why,
+      temp: w ? w.temp : (existing ? existing.temp || '' : ''),
+      source: keep('pf-source', 'source'),
+      referredBy: keep('pf-ref', 'referredBy'),
+      ownerType: keep('pf-otype', 'ownerType'),
+      deciders: keep('pf-deciders', 'deciders'),
+      keyFact: keep('pf-key', 'keyFact'),
+      founder: chk('pf-founder', 'founder'),
+      mentionOk: chk('pf-mention', 'mentionOk'),
+      post: post,
+      wonAt: stage === 'Ganado' ? ((existing && existing.wonAt) || today()) : ((existing && existing.wonAt) || ''),
       units: Number(val('pf-units')) || 0,
       amount: Number(val('pf-amount')) || 0,
       software: val('pf-soft') || 'No',
@@ -367,9 +445,10 @@
     else S.state.prospects.push(rec);
 
     let bumped = false;
-    if (isNew && ctx.src === 'later') {
+    if (later) {
       const d = S.getDay(today());
       d.laters += 1;
+      if (why === 'dueno') d.absent += 1;
       bumped = S.fixVisits(d);
     }
     const calBox = $('pf-cal');
@@ -384,7 +463,7 @@
     if (isNew) closeSheet(); else openDetail(rec);
     render();
     let msg = isNew ? 'Cliente guardado' : 'Cambios guardados';
-    if (isNew && ctx.src === 'later') msg = 'Agendado ' + (rec.nextDate ? U.relDate(rec.nextDate) + (rec.nextTime ? ' ' + rec.nextTime : '') : '') + (bumped ? ' · visita sumada' : '');
+    if (later) msg = 'Agendado ' + U.relDate(rec.nextDate) + ' ' + rec.nextTime + (bumped ? ' · visita sumada' : '') + (rec.temp === 'frio' ? ' · frío (sí falso)' : '') + (why === 'dueno' ? ' · esta noche mándale su perfil' : '');
     if (!(wantCal && !rec.nextDate)) snack(msg, { undo: snap });
   }
 
@@ -492,7 +571,7 @@
     const a = S.rangeStats(D.addDays(t, -6), t);
     const imp = val('rv-improve');
     return 'Semana al ' + U.fmtDate(t) + ' · Sistema CEO Clyclick\n' +
-      'Visitas: ' + a.visits + ' · Demos: ' + a.demos + ' · Ventas: ' + a.sales + '\n' +
+      'Visitas: ' + a.visits + ' · Dueños: ' + a.owners + ' · Demos: ' + a.demos + ' · Ventas: ' + a.sales + '\n' +
       'Habladores: ' + a.units + ' · Ingreso: ' + money(a.revenue) + ' · Cierre: ' + U.pct(a.sales, a.visits) + '\n' +
       'Días con meta: ' + a.met + ' de ' + a.workDays + (imp ? '\nMejora del 1%: ' + imp : '');
   }
@@ -500,15 +579,81 @@
   // ---------- Bienvenida ----------
   function startOnboarding() {
     const c = S.state.config;
-    obDraft = { name: c.sellerName, phone: c.sellerPhone, price: c.unitPrice, cost: c.unitCost, goal: c.dailyVisitGoal, days: c.workDays.slice() };
+    obDraft = { name: c.sellerName, phone: c.sellerPhone, city: c.sellerCity, price: c.unitPrice, cost: c.unitCost, goal: c.dailyVisitGoal, days: c.workDays.slice() };
     openSheet(SH.onboarding(1, obDraft), { kind: 'onb', step: 1 });
   }
   function collectOnb() {
     if (!obDraft) return;
     if ($('ob-name')) obDraft.name = val('ob-name');
     if ($('ob-phone')) obDraft.phone = val('ob-phone');
+    if ($('ob-city')) obDraft.city = val('ob-city');
     if ($('ob-price')) obDraft.price = Number(val('ob-price')) || 0;
     if ($('ob-cost')) obDraft.cost = Number(val('ob-cost')) || 0;
+  }
+
+  // ---------- Que el cliente llene sus datos (Cialdini · compromiso) ----------
+  function saveSelf() {
+    const ctx = sheet ? sheet.ctx : {};
+    const business = val('sf-business');
+    if (!business) { snack('Escriba el nombre del negocio'); const n = $('sf-business'); if (n) n.focus(); return; }
+    const profile = {};
+    ['business', 'owner', 'phone', 'instagram', 'facebook', 'tiktok', 'address', 'hours', 'highlight'].forEach(k => { profile[k] = val('sf-' + k); });
+    const snap = S.snapshot();
+    const now = Date.now();
+    let p = ctx.id ? S.findProspect(ctx.id) : null;
+    if (p) {
+      p.profile = profile;
+      p.name = business;
+      if (profile.owner && !p.contact) p.contact = profile.owner;
+      if (profile.phone && !p.phone) p.phone = profile.phone;
+      if (profile.address && !p.zone) p.zone = profile.address;
+      p.updated = now;
+    } else {
+      p = {
+        id: S.uid(), name: business, contact: profile.owner, phone: profile.phone, zone: profile.address,
+        stage: 'Ganado', source: 'Calle', units: Number(ctx.units) || 0, amount: Number(ctx.amount) || 0,
+        wonAt: today(), profile: profile, lat: null, lng: null, created: now, updated: now
+      };
+      S.state.prospects.push(p);
+      const pid = p.id;
+      N.getPosition().then(function (pos) {
+        const x = S.findProspect(pid);
+        if (x && (x.lat == null || x.lat === '')) { x.lat = pos.lat; x.lng = pos.lng; x.acc = pos.acc; persist(); }
+      }).catch(function () { /* sin ubicación */ });
+    }
+    persist();
+    render();
+    openDetail(p);
+    snack('Datos guardados. Pregúntale dónde lo va a poner (Voss).', { undo: snap });
+  }
+
+  // ---------- Pliego de negociación (Voss) ----------
+  function collectPliego() {
+    return {
+      goal: val('pl-goal'), client: val('pl-client'),
+      target: Number(val('pl-target')) || 0, low: Number(val('pl-low')) || 0, high: Number(val('pl-high')) || 0,
+      summary: val('pl-summary'),
+      acc: $('pl-acc') ? $('pl-acc').value : '', qs: $('pl-qs') ? $('pl-qs').value : '', extras: $('pl-extras') ? $('pl-extras').value : ''
+    };
+  }
+
+  function pliegoText(d, p) {
+    const lines = x => String(x || '').split('\n').map(y => y.trim()).filter(Boolean).map(y => '• ' + y).join('\n');
+    const who = p ? p.name : d.client;
+    let t = 'Pliego de negociación' + (who ? ' · ' + who : '') + '\n';
+    if (d.goal) t += 'Objetivo: ' + d.goal + '\n';
+    if (d.low && d.high) t += 'Rango: "Proyectos así van de ' + money(d.low) + ' a ' + money(d.high) + '."' + (d.target ? ' (mi objetivo: ' + money(d.target) + ')' : '') + '\n';
+    t += 'Al empezar: "' + C.PLIEGO_FAIR + '"\n';
+    if (d.summary) t += '\nResumen (hasta oír "así es"):\n' + d.summary + '\n';
+    if (d.acc) t += '\nAutoacusaciones:\n' + lines(d.acc) + '\n';
+    if (d.qs) t += '\nPreguntas con qué y cómo:\n' + lines(d.qs) + '\n';
+    if (d.extras) t += '\nExtras en vez de descuento:\n' + lines(d.extras) + '\n';
+    return t.trim();
+  }
+
+  function refreshMessages(p) {
+    if (sheet && sheet.ctx.kind === 'messages' && sheet.ctx.id === p.id) refreshSheet(SH.messages(p, sheet.ctx.k, sheet.ctx.fromDetail));
+    else if (sheet && sheet.ctx.kind === 'detail' && sheet.ctx.id === p.id) { refreshSheet(SH.prospectDetail(p)); loadPhotos(p.id); }
   }
 
   // ---------- Clics ----------
@@ -550,7 +695,16 @@
         const snap = S.snapshot();
         const d = S.getDay(t); d.visits += 1; persist(); render();
         const g = Number(S.state.config.dailyVisitGoal) || 0;
-        snack(g && d.visits === g ? '¡Meta de visitas cumplida! (' + d.visits + ')' : 'Visita ' + d.visits + (g ? ' de ' + g : ''), { undo: snap });
+        let m = 'Visita ' + d.visits + (g ? ' de ' + g : '');
+        if (g && d.visits === g) m = '¡Meta cumplida! Haz una más: puede ser la venta (Blount).';
+        else if (g && d.visits > g) m = 'Visita ' + d.visits + ' · extra. Esta puede ser la venta.';
+        snack(m, { undo: snap });
+        break;
+      }
+      case 'dock-owner': {
+        const snap = S.snapshot();
+        const d = S.getDay(t); d.owners += 1; const bumped = S.fixVisits(d); persist(); render();
+        snack('Hablaste con el dueño · ' + d.owners + ' hoy' + (bumped ? ' · visita sumada' : ''), { undo: snap });
         break;
       }
       case 'dock-demo': {
@@ -559,26 +713,136 @@
         snack('Demo ' + d.demos + (bumped ? ' · visita sumada' : ''), { undo: snap });
         break;
       }
-      case 'dock-sale': openSheet(SH.sale(), { kind: 'sale' }); break;
+      case 'dock-sale': openSheet(SH.sale(false), { kind: 'sale' }); break;
       case 'sale-pkg': {
         const p = S.state.config.packages[Number(el.dataset.i)];
         addSale(Number(p.units) || 0, Number(p.price) || 0, p.name);
         break;
       }
       case 'sale-custom': addSale(Math.floor(Number(val('sc-u'))), Number(val('sc-a')), 'Personalizado'); break;
-      case 'dock-no': openSheet(SH.no(), { kind: 'no' }); break;
+      case 'dock-no': openSheet(SH.no(null), { kind: 'no', type: null }); break;
+      case 'no-type': {
+        if (!sheet) break;
+        sheet.ctx.type = el.dataset.k;
+        refreshSheet(SH.no(el.dataset.k, false));
+        break;
+      }
+      case 'no-back': if (sheet) { sheet.ctx.type = null; refreshSheet(SH.no(null)); } break;
+      case 'no-to-later':
+        openProspectForm({ stage: 'Seguimiento', nextAction: 'Volver a visitar', nextDate: D.addDays(t, 1), nextTime: '' }, 'later');
+        break;
       case 'no-reason': {
+        const type = sheet && sheet.ctx.type ? sheet.ctx.type : '';
+        const asi = asiOn();
         const snap = S.snapshot();
         const d = S.getDay(t);
-        d.rejLog.push({ reason: el.dataset.r, at: Date.now() });
+        d.rejLog.push({ reason: el.dataset.r, type: type, asi: asi, at: Date.now() });
         const bumped = S.fixVisits(d);
         persist(); closeSheet(); render();
-        snack('"No" anotado: ' + el.dataset.r + (bumped ? ' · visita sumada' : ''), { undo: snap });
+        const nt = C.NO_TYPES.find(x => x.k === type);
+        snack('"No" anotado: ' + el.dataset.r + (nt ? ' (' + nt.t.toLowerCase() + ')' : '') + (bumped ? ' · visita sumada' : ''), { undo: snap });
         break;
       }
       case 'dock-later':
-        openProspectForm({ stage: 'Seguimiento', nextAction: 'Volver a visitar', nextDate: D.addDays(t, 1), nextTime: '10:00' }, 'later');
+        openProspectForm({ stage: 'Seguimiento', nextAction: 'Volver a visitar', nextDate: D.addDays(t, 1), nextTime: '' }, 'later');
         break;
+      case 'pf-why': {
+        const w = $('pf-why');
+        if (!w) break;
+        w.value = w.value === el.dataset.k ? '' : el.dataset.k;
+        updateWhyHint(true);
+        break;
+      }
+      case 'ab-set': {
+        const d = S.getDay(t);
+        if (d.ab && d.ab.id === el.dataset.id && d.ab.v === el.dataset.v) delete d.ab;
+        else d.ab = { id: el.dataset.id, v: el.dataset.v };
+        persist(); render();
+        if (d.ab) snack('Hoy usas la variante ' + d.ab.v);
+        break;
+      }
+
+      // Ruta y clientes cerca (Blount · Cialdini)
+      case 'route-open':
+        openSheet(SH.route(el.dataset.id || ''), { kind: 'route', focus: el.dataset.id || '' });
+        if (!N.lastPos) locate();
+        break;
+      case 'route-locate': locate(true); break;
+      case 'cerca-locate': cercaTried = true; locate(true); break;
+
+      // Mensajes de WhatsApp
+      case 'msg-open': {
+        const p = S.findProspect(el.dataset.id);
+        if (!p) break;
+        const fromDetail = !!(sheet && sheet.ctx.kind === 'detail');
+        openSheet(SH.messages(p, el.dataset.k || '', fromDetail), { kind: 'messages', id: p.id, k: el.dataset.k || '', fromDetail: fromDetail });
+        break;
+      }
+      case 'msg-send': {
+        // No se cancela el enlace: WhatsApp se abre y aquí solo se anota el envío.
+        const p = S.findProspect(el.dataset.id);
+        if (!p) break;
+        const k = el.dataset.k;
+        p.msgs = (Number(p.msgs) || 0) + 1;
+        p.lastMsg = Date.now();
+        if (k !== 'gracias') p.noReply = (Number(p.noReply) || 0) + 1;
+        p.sent = p.sent || {};
+        if (k !== 'libre') p.sent[k] = k === 'cita' ? p.nextDate : t;
+        if (k === 'resultados') p.resultsAsked = true;
+        if (k === 'pedirRef') p.refAsked = true;
+        p.updated = Date.now();
+        persist();
+        setTimeout(function () { refreshMessages(p); render(); }, 400);
+        break;
+      }
+      case 'msg-replied': {
+        const p = S.findProspect(el.dataset.id);
+        if (!p) break;
+        const snap = S.snapshot();
+        p.noReply = 0; p.replied = Date.now(); p.updated = Date.now();
+        persist(); refreshMessages(p); render();
+        snack('Anotado: respondió', { undo: snap });
+        break;
+      }
+
+      // Que el cliente llene sus datos
+      case 'self-open': {
+        const p = el.dataset.id ? S.findProspect(el.dataset.id) : null;
+        openSheet(SH.selfFill(p), { kind: 'self', id: p ? p.id : null, units: Number(el.dataset.u) || 0, amount: Number(el.dataset.a) || 0 });
+        break;
+      }
+      case 'self-save': saveSelf(); break;
+
+      // Pliego de negociación
+      case 'pliego-open': {
+        const p = el.dataset.id ? S.findProspect(el.dataset.id) : null;
+        openSheet(SH.pliego(p), { kind: 'pliego', id: p ? p.id : null });
+        break;
+      }
+      case 'pliego-calc': {
+        const target = Number(val('pl-target'));
+        if (!(target > 0)) { snack('Pon tu precio objetivo'); break; }
+        $('pl-low').value = S.nonRound(target);
+        $('pl-high').value = S.nonRound(target * 1.45);
+        snack('Rango listo: di la cifra baja como tu objetivo');
+        break;
+      }
+      case 'pliego-save': {
+        const p = sheet && sheet.ctx.id ? S.findProspect(sheet.ctx.id) : null;
+        if (!p) break;
+        const snap = S.snapshot();
+        p.pliego = collectPliego();
+        if (!p.software || p.software === 'No') p.software = 'Tal vez';
+        p.updated = Date.now();
+        persist(); render(); openDetail(p);
+        snack('Pliego guardado en la ficha', { undo: snap });
+        break;
+      }
+      case 'pliego-copy': {
+        const p = sheet && sheet.ctx.id ? S.findProspect(sheet.ctx.id) : null;
+        N.copy(pliegoText(collectPliego(), p)).then(r => snack(r === 'copied' ? 'Pliego copiado' : 'No se pudo copiar'));
+        break;
+      }
       case 'undo-last': undoLast(); break;
 
       case 'ans': {
@@ -656,8 +920,26 @@
         if (!p || p.stage === el.dataset.s) break;
         const snap = S.snapshot();
         p.stage = el.dataset.s; p.updated = Date.now();
+        if (p.stage === 'Ganado' && !p.wonAt) p.wonAt = t;
         persist(); render(); refreshSheet(SH.prospectDetail(p)); loadPhotos(p.id);
-        snack('Etapa: ' + p.stage, { undo: snap });
+        snack('Etapa: ' + p.stage + (p.stage === 'Ganado' ? ' · a los 7 días te recuerdo pedir resultados' : ''), { undo: snap });
+        break;
+      }
+      case 'p-done': {
+        const p = S.findProspect(el.dataset.id);
+        if (!p) break;
+        const snap = S.snapshot();
+        p.nextDate = ''; p.nextTime = ''; p.nextAction = ''; p.updated = Date.now();
+        persist(); render(); refreshSheet(SH.prospectDetail(p)); loadPhotos(p.id);
+        snack('Pendiente hecho', { undo: snap });
+        break;
+      }
+      case 'p-new-ref': {
+        const parent = S.findProspect(el.dataset.id);
+        if (!parent) break;
+        parent.refAsked = true; parent.updated = Date.now(); persist();
+        const by = parent.contact ? parent.contact + ' (' + parent.name + ')' : parent.name;
+        openProspectForm({ stage: 'Por visitar', source: 'Referido', referredBy: by, nextAction: 'Primer mensaje: contacto referido' }, 'ref');
         break;
       }
       case 'p-geo': fillGeo(true); break;
@@ -692,7 +974,7 @@
       case 'exp-new': openSheet(SH.exp(), { kind: 'exp', id: null }); break;
       case 'exp-idea': {
         const idea = C.EXP_IDEAS[Number(el.dataset.i)];
-        openSheet(SH.exp({ title: idea.title, hypothesis: idea.hypothesis, metric: idea.metric }), { kind: 'exp', id: null });
+        openSheet(SH.exp({ title: idea.title, hypothesis: idea.hypothesis, metric: idea.metric, a: idea.a || '', b: idea.b || '' }), { kind: 'exp', id: null });
         break;
       }
       case 'exp-open': {
@@ -703,12 +985,14 @@
       case 'exp-save': {
         const title = val('ef-title');
         if (!title) { snack('Escribe qué vas a probar'); break; }
+        const a = val('ef-a'), b = val('ef-b');
+        if (!!a !== !!b) { snack('Pon las dos variantes (A y B) o ninguna'); break; }
         const id = sheet.ctx.id || S.uid();
-        const rec = { id: id, title: title, hypothesis: val('ef-hyp'), metric: val('ef-metric'), start: val('ef-start'), status: val('ef-status') || 'Corriendo', result: val('ef-result') };
+        const rec = { id: id, title: title, hypothesis: val('ef-hyp'), metric: val('ef-metric'), start: val('ef-start'), status: val('ef-status') || 'Corriendo', result: val('ef-result'), a: a, b: b };
         const i = S.state.experiments.findIndex(x => x.id === id);
         if (i === -1) S.state.experiments.push(rec); else S.state.experiments[i] = rec;
         persist(); closeSheet(); render();
-        snack(rec.status === 'Corriendo' ? 'Experimento en marcha' : 'Guardado · fracaso = información (Ley 21)');
+        snack(rec.status === 'Corriendo' ? (a ? 'Experimento A/B en marcha: elige la variante cada mañana en Hoy' : 'Experimento en marcha') : 'Guardado · fracaso = información (Ley 21)');
         break;
       }
       case 'exp-delete': {
@@ -768,7 +1052,7 @@
         if (!name) { snack('Pon un nombre'); break; }
         if (!(units >= 1)) { snack('Mínimo 1 unidad'); break; }
         if (!(price >= 0)) { snack('Precio inválido'); break; }
-        S.state.config.packages[i] = { name: name, units: units, price: price, desc: val('pk-desc') };
+        S.state.config.packages[i] = { name: name, units: units, price: price, desc: val('pk-desc'), why: val('pk-why') };
         persist(); closeSheet(); render(); snack('Paquete guardado');
         break;
       }
@@ -824,6 +1108,7 @@
         const c = S.state.config;
         c.sellerName = obDraft.name || '';
         c.sellerPhone = obDraft.phone || '';
+        c.sellerCity = obDraft.city || '';
         c.unitPrice = Number(obDraft.price) || 0;
         c.unitCost = Number(obDraft.cost) || 0;
         c.dailyVisitGoal = Number(obDraft.goal) || 15;
@@ -869,12 +1154,16 @@
       if ($('meta-hero')) $('meta-hero').innerHTML = V.metaHero();
       if ($('meta-eq')) $('meta-eq').innerHTML = V.metaEq();
       if ($('meta-calc')) $('meta-calc').innerHTML = V.metaCalc();
+      if ($('meta-hour')) $('meta-hour').innerHTML = V.metaHour();
     }
   });
 
   document.addEventListener('change', function (e) {
     const el = e.target;
     if (el.id === 'pf-rubro') updateRubroHint();
+    else if (el.id === 'pf-otype') updateOwnerHint();
+    else if (el.id === 'pf-source') { const w = $('pf-ref-wrap'); if (w) w.style.display = el.value === 'Referido' ? '' : 'none'; }
+    else if (el.id === 'pf-stage') { const w = $('pf-post'); if (w) w.style.display = el.value === 'Ganado' ? '' : 'none'; }
     else if (el.id === 'cfg-cal') { S.state.config.calDefault = !!el.checked; persist(); }
     else if (el.id === 'de-date' && sheet && sheet.ctx.kind === 'dayEdit') {
       const v = el.value;

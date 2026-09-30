@@ -47,7 +47,13 @@
     star: '<path d="m12 3.8 2.5 5.1 5.6.8-4 3.9 1 5.6-5.1-2.7-5.1 2.7 1-5.6-4-3.9 5.6-.8z"/>',
     copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
     warn: '<path d="M12 4.2 2.8 19.5h18.4z"/><path d="M12 10v4.2"/><circle cx="12" cy="17" r=".9" fill="currentColor"/>',
-    info: '<circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r=".9" fill="currentColor"/>'
+    info: '<circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.5"/><circle cx="12" cy="7.8" r=".9" fill="currentColor"/>',
+    route: '<circle cx="6" cy="18" r="2.3"/><circle cx="18" cy="6" r="2.3"/><path d="M8.3 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.7"/>',
+    gift: '<rect x="3.8" y="8.5" width="16.4" height="4" rx="1"/><path d="M5.3 12.5v7.2h13.4v-7.2M12 8.5v11.2"/><path d="M12 8.5C10.5 5 7 4.6 7 6.8 7 8.5 12 8.5 12 8.5zM12 8.5c1.5-3.5 5-3.9 5-1.7 0 1.7-5 1.7-5 1.7z"/>',
+    pen: '<path d="M4.5 19.5l1-4L15.8 5.2a2 2 0 0 1 2.9 0l.1.1a2 2 0 0 1 0 2.9L8.5 18.5z"/><path d="M13.8 7.2l3 3"/>',
+    handshake: '<path d="M2.8 11.5 6.5 8l3 1.5L12 8l3 1.5L17.5 8l3.7 3.5"/><path d="M6.5 8v6.5l4 3.5 1.5-1 1.5 1 4-3.5V8"/>',
+    flag: '<path d="M5.5 21V4"/><path d="M5.5 4.5h11l-2 4 2 4h-11"/>',
+    back: '<path d="m14.5 5.5-6.5 6.5 6.5 6.5"/>'
   };
 
   const U = {};
@@ -110,6 +116,65 @@
     const i = C.STAGES.indexOf(stage);
     return '<span class="pill s' + (i < 0 ? 0 : i) + '">' + esc(stage) + '</span>';
   };
+
+  // Temperatura del prospecto (Voss · detector de sí falso).
+  U.tempPill = function (temp) {
+    const C = window.CONTENT;
+    if (!temp || !C.TEMPS[temp]) return '';
+    return '<span class="pill t-' + temp + '">' + esc(C.TEMPS[temp]) + '</span>';
+  };
+
+  // Reemplaza marcadores del guion con datos del vendedor y de los paquetes. El texto base es de CONTENT (confiable);
+  // los valores del usuario se escapan.
+  U.fill = function (text, extra) {
+    const cfg = S.state.config;
+    const pk = cfg.packages || [];
+    const map = Object.assign({
+      yo: cfg.sellerName || '[tu nombre]',
+      ciudad: cfg.sellerCity || '[tu ciudad]',
+      basico: pk[0] ? pk[0].name : 'básico',
+      precioBasico: pk[0] ? U.money(pk[0].price) : '',
+      medio: pk[1] ? pk[1].name : 'del medio',
+      precioMedio: pk[1] ? U.money(pk[1].price) : '',
+      porqueMedio: pk[1] && pk[1].why ? pk[1].why : 'es el más equilibrado para un local como el suyo',
+      grande: pk[2] ? pk[2].name : 'completo',
+      precioGrande: pk[2] ? U.money(pk[2].price) : ''
+    }, extra || {});
+    return String(text || '').replace(/\{(\w+)\}/g, function (m, k) { return map[k] != null ? esc(map[k]) : m; });
+  };
+
+  // "mañana a las 10:00", "el jueves a las 16:30"… para las plantillas de WhatsApp.
+  U.whenPhrase = function (p) {
+    if (!p || !p.nextDate || !D.validYmd(p.nextDate)) return 'esta semana';
+    const n = D.daysBetween(D.ymd(), p.nextDate);
+    let d;
+    if (n === 0) d = 'hoy';
+    else if (n === 1) d = 'mañana';
+    else if (n > 1 && n < 7) d = 'el ' + D.parseYmd(p.nextDate).toLocaleDateString('es-EC', { weekday: 'long' });
+    else d = 'el ' + U.fmtDate(p.nextDate, { day: 'numeric', month: 'long' });
+    return d + (p.nextTime ? ' a las ' + p.nextTime : '');
+  };
+
+  // Texto plano de una plantilla de WhatsApp para un cliente.
+  U.tplText = function (k, p) {
+    const C = window.CONTENT;
+    const cfg = S.state.config;
+    const t = C.TEMPLATES.find(x => x.k === k);
+    if (!t) return '';
+    p = p || {};
+    const dueno = String(p.contact || (p.profile && p.profile.owner) || '').trim().split(/\s+/)[0] || '';
+    const map = {
+      dueno: dueno ? ' ' + dueno : '',
+      yo: cfg.sellerName || 'su asesor',
+      ciudad: cfg.sellerCity || 'la zona',
+      negocio: p.name || 'su negocio',
+      cuando: U.whenPhrase(p),
+      referido: p.referredBy || 'Un cliente',
+      donde: (p.post && p.post.where) ? 'en ' + p.post.where : 'donde más clientes pasan'
+    };
+    return t.text.replace(/\{(\w+)\}/g, function (m, key) { return map[key] != null ? map[key] : m; });
+  };
+
 
   U.nav = function (title, left, right) {
     return '<div class="nav"><div class="nav-in"><div class="nav-left">' + (left || '') + '</div><div class="nav-title">' + esc(title) + '</div><div class="nav-right">' + (right || '') + '</div></div></div>';
