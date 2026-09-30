@@ -407,8 +407,10 @@
 
     const unit = Number(o.unitPrice) || 0;
     let y = 480;
-    (o.packages || []).forEach(function (p, i) {
-      const rec = i === 1;
+    // De mayor a menor (Cialdini · contraste). El recomendado sigue siendo el del medio.
+    (o.packages || []).map(function (p, i) { return { p: p, i: i }; }).reverse().forEach(function (x) {
+      const p = x.p;
+      const rec = x.i === 1;
       const units = Number(p.units) || 0;
       const price = Number(p.price) || 0;
       const h = 225;
@@ -470,10 +472,11 @@
     const lines = pk.map(function (p, i) {
       const u = Number(p.units) || 0;
       return '• ' + p.name + (i === 1 ? ' (recomendado)' : '') + ': ' + u + ' hablador' + (u === 1 ? '' : 'es') + ' — ' + money(p.price);
-    });
+    }).reverse();
     const hi = 'Hola' + (o.contact ? ' ' + o.contact : '') + (o.seller ? ', soy ' + o.seller + ', de Clyclick.' : ', le escribo de Clyclick.');
+    const rec = pk[1] ? 'Le recomiendo el ' + pk[1].name + (pk[1].why ? ', porque ' + pk[1].why : '') + '. ' : '';
     return hi + ' Le comparto las opciones del hablador con QR y NFC' + (o.business ? ' para ' + o.business : '') + ':\n\n' +
-      lines.join('\n') + '\n\n' + (pk[1] ? '¿Arrancamos con el ' + pk[1].name + '?' : '¿Arrancamos?');
+      lines.join('\n') + '\n\n' + rec + '¿Sería mala idea si se lo preparo esta semana?';
   };
 
   N.waUrl = function (phone, text) {
